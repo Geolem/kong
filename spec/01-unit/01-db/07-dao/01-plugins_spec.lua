@@ -1,7 +1,7 @@
 local Plugins = require("kong.db.dao.plugins")
 local Entity = require("kong.db.schema.entity")
 local Errors = require("kong.db.errors")
-require("spec.helpers") -- add spec/fixtures/custom_plugins to package.path
+local helpers = require "spec.helpers"
 
 
 describe("kong.db.dao.plugins", function()
@@ -75,4 +75,81 @@ describe("kong.db.dao.plugins", function()
 
   end)
 
+
+  for _, strategy in helpers.each_strategy() do
+    local bp, db, route, service
+
+    before_each(function()
+      bp, db = helpers.get_db_utils(strategy, {
+        "routes",
+        "services",
+        "plugins",
+      })
+      service = bp.services:insert()
+      route = bp.routes:insert({ protocols = { "tcp" },
+                                 sources = { { ip = "127.0.0.1" } },
+                               })
+
+    end)
+
+
+    describe("protocols matching route [#" .. strategy ..  "]", function()
+      it("returns an error when inserting mismatched plugins", function()
+        local plugin, _, err_t = db.plugins:insert({ name = "key-auth",
+                                                     protocols = { "http" },
+                                                     route = { id = route.id },
+                                                   })
+        assert.is_nil(plugin)
+        assert.equals(err_t.fields.protocols, "Plugin protocols must match the associated route's protocols")
+
+        local plugin, _, err_t = db.plugins:insert({ name = "key-auth",
+                                                     protocols = { "tcp" },
+                                                     service = { id = service.id },
+                                                   })
+        assert.is_nil(plugin)
+        assert.equals(err_t.fields.protocols,
+                      "Plugin protocols must match at least one of the service's route's protocols")
+      end)
+
+      it("returns an error when updating mismatched plugins", function()
+        local plugin = db.plugins:insert({ name = "key-auth",
+                                           protocols = { "http" },
+                                         })
+        assert.truthy(plugin)
+
+        local p, _, err_t = db.plugins:update({ id = plugin.id },
+                                              { route = { id = route.id } })
+        assert.is_nil(p)
+        assert.equals(err_t.fields.protocols, "Plugin protocols must match the associated route's protocols")
+
+
+        local p, _, err_t = db.plugins:update({ id = plugin.id },
+                                              { service = { id = service.id } })
+        assert.is_nil(p)
+        assert.equals(err_t.fields.protocols,
+                      "Plugin protocols must match at least one of the service's route's protocols")
+      end)
+
+      it("returns an error when upserting mismatched plugins", function()
+        local plugin = db.plugins:insert({ name = "key-auth",
+                                           protocols = { "http" },
+                                         })
+        assert.truthy(plugin)
+
+        local p, _, err_t = db.plugins:upsert({ id = plugin.id },
+                                              { route = { id = route.id } })
+        assert.is_nil(p)
+        assert.equals(err_t.fields.protocols, "Plugin protocols must match the associated route's protocols")
+
+
+        local p, _, err_t = db.plugins:upsert({ id = plugin.id },
+                                              { service = { id = service.id } })
+        assert.is_nil(p)
+        assert.equals(err_t.fields.protocols,
+                      "Plugin protocols must match at least one of the service's route's protocols")
+      end)
+
+
+    end)
+  end
 end)
