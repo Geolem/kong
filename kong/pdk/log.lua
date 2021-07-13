@@ -44,6 +44,7 @@ local phases_with_ctx =
     phase_checker.new(PHASES.rewrite,
                       PHASES.access,
                       PHASES.header_filter,
+                      PHASES.response,
                       PHASES.body_filter,
                       PHASES_LOG)
 local _LEVELS = {
@@ -221,7 +222,7 @@ local serializers = {
 -- ```
 --
 -- @function kong.log
--- @phases init_worker, certificate, rewrite, access, header_filter, body_filter, log
+-- @phases init_worker, certificate, rewrite, access, header_filter, response, body_filter, log
 -- @param ... all params will be concatenated and stringified before being sent to the log
 -- @return Nothing; throws an error on invalid inputs.
 --
@@ -261,7 +262,7 @@ local serializers = {
 -- ```
 --
 -- @function kong.log.LEVEL
--- @phases init_worker, certificate, rewrite, access, header_filter, body_filter, log
+-- @phases init_worker, certificate, rewrite, access, header_filter, response, body_filter, log
 -- @param ... all params will be concatenated and stringified before being sent to the log
 -- @return Nothing; throws an error on invalid inputs.
 -- @usage
@@ -369,10 +370,6 @@ end
 -- via `kong.log.inspect.off()`, then this function prints nothing, and is
 -- aliased to a "NOP" function in order to save CPU cycles.
 --
--- ``` lua
--- kong.log.inspect("...")
--- ```
---
 -- This function differs from `kong.log()` in the sense that arguments will be
 -- concatenated with a space(`" "`), and each argument will be
 -- "pretty-printed":
@@ -407,7 +404,7 @@ end
 -- library to pretty-print its arguments.
 --
 -- @function kong.log.inspect
--- @phases init_worker, certificate, rewrite, access, header_filter, body_filter, log
+-- @phases init_worker, certificate, rewrite, access, header_filter, response, body_filter, log
 -- @param ... Parameters will be concatenated with spaces between them and
 -- rendered as described
 -- @usage
@@ -437,7 +434,7 @@ do
     -- formatting of arguments.
     --
     -- @function kong.log.inspect.on
-    -- @phases init_worker, certificate, rewrite, access, header_filter, body_filter, log
+    -- @phases init_worker, certificate, rewrite, access, header_filter, response, body_filter, log
     -- @usage
     -- kong.log.inspect.on()
     function self.on()
@@ -450,7 +447,7 @@ do
     -- `kong.log.inspect()` will be nopped.
     --
     -- @function kong.log.inspect.off
-    -- @phases init_worker, certificate, rewrite, access, header_filter, body_filter, log
+    -- @phases init_worker, certificate, rewrite, access, header_filter, response, body_filter, log
     -- @usage
     -- kong.log.inspect.off()
     function self.off()
@@ -499,7 +496,7 @@ end
 -- phase in most real-usage cases.
 --
 -- @function kong.log.set_serialize_value
--- @phases certificate, rewrite, access, header_filter, body_filter, log
+-- @phases certificate, rewrite, access, header_filter, response, body_filter, log
 -- @tparam string key the name of the field.
 -- @tparam number|string|boolean|table value value to be set. When a table is used, its keys must be numbers, strings, booleans, and its values can be numbers, strings or other tables like itself, recursively.
 -- @tparam table options can contain two entries: options.mode can be `set` (the default, always sets), `add` (only add if entry does not already exist) and `replace` (only change value if it already exists).
@@ -737,10 +734,8 @@ do
         },
         tries = (ctx.balancer_data or {}).tries,
         latencies = {
-          kong = (ctx.KONG_ACCESS_TIME or 0) +
-                 (ctx.KONG_RECEIVE_TIME or 0) +
-                 (ctx.KONG_REWRITE_TIME or 0) +
-                 (ctx.KONG_BALANCER_TIME or 0),
+          kong = (ctx.KONG_PROXY_LATENCY or ctx.KONG_RESPONSE_LATENCY or 0) +
+                 (ctx.KONG_RECEIVE_TIME or 0),
           proxy = ctx.KONG_WAITING_TIME or -1,
           request = var.request_time * 1000
         },
@@ -749,7 +744,7 @@ do
         service = ctx.service,
         consumer = ctx.authenticated_consumer,
         client_ip = var.remote_addr,
-        started_at = req.start_time() * 1000
+        started_at = ctx.KONG_PROCESSING_START or (req.start_time() * 1000)
       })
     end
 
@@ -777,7 +772,7 @@ do
         session_tls = {
           version = session_tls_ver,
           cipher = var.ssl_cipher,
-          client_verify = ngx.ctx.CLIENT_VERIFY_OVERRIDE or var.ssl_client_verify,
+          client_verify = ctx.CLIENT_VERIFY_OVERRIDE or var.ssl_client_verify,
         }
       end
 
@@ -797,8 +792,7 @@ do
         },
         tries = (ctx.balancer_data or {}).tries,
         latencies = {
-          kong = (ctx.KONG_PREREAD_TIME or 0) +
-                 (ctx.KONG_BALANCER_TIME or 0),
+          kong = ctx.KONG_PROXY_LATENCY or ctx.KONG_RESPONSE_LATENCY or 0,
           session = var.session_time * 1000,
         },
         authenticated_entity = authenticated_entity,
@@ -806,7 +800,7 @@ do
         service = ctx.service,
         consumer = ctx.authenticated_consumer,
         client_ip = var.remote_addr,
-        started_at = req.start_time() * 1000
+        started_at = ctx.KONG_PROCESSING_START or (req.start_time() * 1000)
       })
     end
   end
