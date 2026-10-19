@@ -1,7 +1,7 @@
 use strict;
 use warnings FATAL => 'all';
 use Test::Nginx::Socket::Lua;
-use t::Util;
+do "./t/Util.pm";
 
 $ENV{TEST_NGINX_NXSOCK} ||= html_dir();
 
@@ -33,10 +33,11 @@ qq{
             {
                 method        = "enable_buffering",
                 args          = { "http" },
-                init_worker   = false,
+                init_worker   = "forced false",
                 certificate   = "pending",
                 rewrite       = true,
                 access        = true,
+                response      = "forced false",
                 header_filter = "forced false",
                 body_filter   = "forced false",
                 log           = "forced false",
@@ -46,8 +47,9 @@ qq{
                 args          = { "http" },
                 init_worker   = false,
                 certificate   = "pending",
-                rewrite       = "forced false",
+                rewrite       = true,
                 access        = true,
+                response      = "forced false",
                 header_filter = "forced false",
                 body_filter   = "forced false",
                 log           = "forced false",
@@ -59,6 +61,7 @@ qq{
                 certificate   = "pending",
                 rewrite       = true,
                 access        = true,
+                response      = "forced false",
                 header_filter = "forced false",
                 body_filter   = "forced false",
                 log           = "forced false",
@@ -68,8 +71,9 @@ qq{
                 args          = { "/" },
                 init_worker   = false,
                 certificate   = "pending",
-                rewrite       = "forced false",
+                rewrite       = true,
                 access        = true,
+                response      = "forced false",
                 header_filter = "forced false",
                 body_filter   = "forced false",
                 log           = "forced false",
@@ -81,6 +85,7 @@ qq{
                 certificate   = "pending",
                 rewrite       = true,
                 access        = true,
+                response      = "forced false",
                 header_filter = "forced false",
                 body_filter   = "forced false",
                 log           = "forced false",
@@ -92,6 +97,19 @@ qq{
                 certificate   = "pending",
                 rewrite       = true,
                 access        = true,
+                response      = "forced false",
+                header_filter = "forced false",
+                body_filter   = "forced false",
+                log           = "forced false",
+                admin_api     = "forced false",
+            }, {
+                method        = "clear_query_arg",
+                args          = { "foo" },
+                init_worker   = false,
+                certificate   = "pending",
+                rewrite       = true,
+                access        = true,
+                response      = "forced false",
                 header_filter = "forced false",
                 body_filter   = "forced false",
                 log           = "forced false",
@@ -103,6 +121,7 @@ qq{
                 certificate   = "pending",
                 rewrite       = true,
                 access        = true,
+                response      = "forced false",
                 header_filter = "forced false",
                 body_filter   = "forced false",
                 log           = "forced false",
@@ -114,6 +133,7 @@ qq{
                 certificate   = "pending",
                 rewrite       = true,
                 access        = true,
+                response      = "forced false",
                 header_filter = "forced false",
                 body_filter   = "forced false",
                 log           = "forced false",
@@ -125,6 +145,7 @@ qq{
                 certificate   = "pending",
                 rewrite       = true,
                 access        = true,
+                response      = "forced false",
                 header_filter = "forced false",
                 body_filter   = "forced false",
                 log           = "forced false",
@@ -136,6 +157,7 @@ qq{
                 certificate   = "pending",
                 rewrite       = true,
                 access        = true,
+                response      = "forced false",
                 header_filter = "forced false",
                 body_filter   = "forced false",
                 log           = "forced false",
@@ -147,6 +169,7 @@ qq{
                 certificate   = "pending",
                 rewrite       = true,
                 access        = true,
+                response      = "forced false",
                 header_filter = false,
                 body_filter   = false,
                 log           = false,
@@ -158,9 +181,34 @@ qq{
                 certificate   = "pending",
                 rewrite       = true,
                 access        = true,
+                response      = "forced false",
                 header_filter = false,
                 body_filter   = false,
                 log           = false,
+                admin_api     = "forced false",
+            },{
+                method        = "disable_tls",
+                args          = { },
+                init_worker   = "forced false",
+                certificate   = "pending",
+                rewrite       = "forced false",
+                access        = "forced false",
+                response      = "forced false",
+                header_filter = "forced false",
+                body_filter   = "forced false",
+                log           = "forced false",
+                admin_api     = "forced false",
+            },{
+                method        = "enable_tls",
+                args          = { },
+                init_worker   = "forced false",
+                certificate   = "pending",
+                rewrite       = "forced false",
+                access        = "forced false",
+                response      = "forced false",
+                header_filter = "forced false",
+                body_filter   = "forced false",
+                log           = "forced false",
                 admin_api     = "forced false",
             },
         }
@@ -184,6 +232,7 @@ qq{
 
         access_by_lua_block {
             phase_check_functions(phases.access)
+            phase_check_functions(phases.response)
             phase_check_functions(phases.admin_api)
         }
 

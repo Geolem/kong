@@ -25,12 +25,30 @@ ignore = {
 exclude_files = {
     "spec/fixtures/invalid-module.lua",
     "spec-old-api/fixtures/invalid-module.lua",
+    "bazel-bin",
+    "bazel-out",
+    "bazel-kong",
+}
+
+files["kong/tools/sandbox/kong.lua"] = {
+     read_globals = {
+        "_ENV",
+        "table.pack",
+        "table.unpack",
+     }
 }
 
 
 files["kong/hooks.lua"] = {
     read_globals = {
         "table.pack",
+        "table.unpack",
+    }
+}
+
+
+files["kong/db/schema/entities/workspaces.lua"] = {
+    read_globals = {
         "table.unpack",
     }
 }
@@ -46,6 +64,10 @@ files["kong/plugins/ldap-auth/*.lua"] = {
 
 
 files["spec/**/*.lua"] = {
+    std = "ngx_lua+busted",
+}
+
+files["**/*_test.lua"] = {
     std = "ngx_lua+busted",
 }
 

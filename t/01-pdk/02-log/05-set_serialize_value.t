@@ -1,9 +1,9 @@
 use strict;
 use warnings FATAL => 'all';
 use Test::Nginx::Socket::Lua;
-use t::Util;
+do "./t/Util.pm";
 
-plan tests => 49;
+plan tests => 51;
 
 run_tests();
 
@@ -35,6 +35,7 @@ mode false mode must be 'set', 'add' or 'replace'
 [error]
 
 
+
 === TEST 2: kong.log.serialize() rejects invalid values, including self-referencial tables
 --- http_config eval: $t::Util::HttpConfig
 --- config
@@ -64,6 +65,7 @@ self_ref false value must be nil, a number, string, boolean or a non-self-refere
 [error]
 
 
+
 === TEST 3: kong.log.set_serialize_value stores changes on ngx.ctx.serialize_values
 --- http_config eval: $t::Util::HttpConfig
 --- config
@@ -73,15 +75,15 @@ self_ref false value must be nil, a number, string, boolean or a non-self-refere
             local pdk = PDK.new()
 
             pdk.log.set_serialize_value("val1", 1)
-            assert(#ngx.ctx.serialize_values == 3, "== 3 ")
+            assert(#ngx.ctx.serialize_values == 1, "== 1 ")
 
             -- Supports several operations over the same variable
             pdk.log.set_serialize_value("val1", 2)
-            assert(#ngx.ctx.serialize_values == 4, "== 4")
+            assert(#ngx.ctx.serialize_values == 2, "== 2")
 
             -- Other variables also supported
             pdk.log.set_serialize_value("val2", 1)
-            assert(#ngx.ctx.serialize_values == 5, "== 5")
+            assert(#ngx.ctx.serialize_values == 3, "== 3")
         }
     }
 --- request
@@ -89,6 +91,7 @@ GET /t
 --- no_response_body
 --- no_error_log
 [error]
+
 
 
 === TEST 4: kong.log.set_serialize_value() sets, adds and replaces values with simple keys
@@ -139,6 +142,7 @@ add existing value does not set it true
 [error]
 
 
+
 === TEST 5: kong.log.set_serialize_value sets, adds and replaces values with keys with dots
 --- http_config eval: $t::Util::HttpConfig
 --- config
@@ -182,6 +186,14 @@ add existing value does not set it true
             pdk.log.set_serialize_value("foo.bar.baz", 3, { mode = "add" })
             local s = pdk.log.serialize({ kong = pdk })
             pdk.log.info("add existing deep leaf does not change it", s.foo.bar.baz == 2)
+
+            pdk.log.set_serialize_value("foo4\\.bar\\.baz", 4, { mode = "add" })
+            local s = pdk.log.serialize({ kong = pdk })
+            pdk.log.info("add new branch with dots escaped creates it ", s["foo4.bar.baz"] == 4)
+
+            pdk.log.set_serialize_value("foo4.bar\\.baz", 4, { mode = "add" })
+            local s = pdk.log.serialize({ kong = pdk })
+            pdk.log.info("add new branch with nested and dots escaped creates it ", s.foo4["bar.baz"] == 4)
         }
     }
 
@@ -198,6 +210,8 @@ replace existing deep leaf changes it true
 add new deep leaf to root adds it true
 add new branch creates it true
 add existing deep leaf does not change it
+add new branch with dots escaped creates it true
+add new branch with nested and dots escaped creates it true
 --- no_error_log
 [error]
 
@@ -248,6 +262,8 @@ complex true
 --- no_error_log
 [error]
 
+
+
 === TEST 7: kong.log.set_serialize_value() setting values to nil
 --- http_config eval: $t::Util::HttpConfig
 --- config
@@ -287,6 +303,8 @@ request.headers.authorization true
 --- no_error_log
 [error]
 
+
+
 === TEST 8: kong.log.serialize() redactes authorization headers by default
 --- http_config eval: $t::Util::HttpConfig
 --- config
@@ -325,5 +343,3 @@ Proxy-Authorization REDACTED
 PROXY_AUTHORIZATION REDACTED
 --- no_error_log
 [error]
-
-

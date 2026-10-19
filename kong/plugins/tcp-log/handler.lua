@@ -1,4 +1,6 @@
 local cjson = require "cjson"
+local sandbox = require "kong.tools.sandbox".sandbox
+local kong_meta = require "kong.meta"
 
 
 local kong = kong
@@ -22,13 +24,22 @@ local function log(premature, conf, message)
   local ok, err = sock:connect(host, port)
   if not ok then
     kong.log.err("failed to connect to ", host, ":", tostring(port), ": ", err)
+    sock:close()
     return
   end
 
-  if conf.tls then
-    ok, err = sock:sslhandshake(true, conf.tls_sni, false)
+  local times, err = sock:getreusedtimes()
+  if not times then
+    kong.log.err("failed to get socket reused time to ", host, ":", tostring(port), ": ", err)
+    sock:close()
+    return
+  end
+
+  if conf.tls and times == 0 then
+    ok, err = sock:sslhandshake(false, conf.tls_sni, false)
     if not ok then
       kong.log.err("failed to perform TLS handshake to ", host, ":", port, ": ", err)
+      sock:close()
       return
     end
   end
@@ -41,6 +52,7 @@ local function log(premature, conf, message)
   ok, err = sock:setkeepalive(keepalive)
   if not ok then
     kong.log.err("failed to keepalive to ", host, ":", tostring(port), ": ", err)
+    sock:close()
     return
   end
 end
@@ -48,11 +60,18 @@ end
 
 local TcpLogHandler = {
   PRIORITY = 7,
-  VERSION = "2.0.1",
+  VERSION = kong_meta.version,
 }
 
 
 function TcpLogHandler:log(conf)
+  if conf.custom_fields_by_lua then
+    local set_serialize_value = kong.log.set_serialize_value
+    for key, expression in pairs(conf.custom_fields_by_lua) do
+      set_serialize_value(key, sandbox(expression)())
+    end
+  end
+
   local message = kong.log.serialize()
   local ok, err = timer_at(0, log, conf, message)
   if not ok then

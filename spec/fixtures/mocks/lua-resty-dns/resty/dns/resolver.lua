@@ -47,10 +47,10 @@ end
 -- load and cache the mock-records
 local get_mock_records
 do
-  local mock_records
+  local mock_file
   get_mock_records = function()
-    if mock_records then
-      return mock_records
+    if mock_file then
+      return mock_file.records, mock_file.mocks_only
     end
 
     local is_file = require("pl.path").isfile
@@ -63,11 +63,11 @@ do
 
     local filename = prefix .. "/" .. MOCK_RECORD_FILENAME
 
-    mock_records = {}
+    mock_file = {}
     if not is_file(filename) then
       -- no mock records set up, return empty default
       ngx.log(ngx.DEBUG, LOG_PREFIX, "bypassing mock, no mock records found")
-      return mock_records
+      return mock_file
     end
 
     -- there is a file with mock records available, go load it
@@ -75,9 +75,8 @@ do
     local json_file = assert(f:read("*a"))
     f:close()
 
-    mock_records = assert(cjson.decode(json_file))
-
-    return mock_records
+    mock_file = assert(cjson.decode(json_file))
+    return mock_file.records, mock_file.mocks_only
   end
 end
 
@@ -85,7 +84,7 @@ end
 -- patch the actual query method
 local old_query = resolver.query
 resolver.query = function(self, name, options, tries)
-  local mock_records = get_mock_records()
+  local mock_records, mocks_only = get_mock_records()
   local qtype = (options or {}).qtype or resolver.TYPE_A
 
   local answer = (mock_records[qtype] or {})[name]
@@ -95,9 +94,29 @@ resolver.query = function(self, name, options, tries)
     return answer, nil, tries
   end
 
-  -- no mock, so invoke original resolver
-  return old_query(self, name, options, tries)
+  if not mocks_only then
+    -- No mock, so invoke original resolver.  Note that if the original resolver fails (i.e. because an
+    -- invalid domain name like example.com was used), we return an empty result set instead of passing
+    -- the error up to the caller.  This is done so that if the mock contains "A" records (which would
+    -- be the most common case), the initial query for a SRV record does not fail, but appear not to have
+    -- yielded any results.  This will make dns/client.lua try finding an A record next.
+    local records, err, tries = old_query(self, name, options, tries)
+    if records then
+      return records, err, tries
+    end
+  end
+
+  return {}, nil, tries
 end
+
+-- do
+--   local semaphore = require "ngx.semaphore"
+--   local old_post = semaphore.post
+--   function semaphore.post(self, n)
+--     old_post(self, n)
+--     ngx.sleep(0)
+--   end
+-- end
 
 
 return resolver

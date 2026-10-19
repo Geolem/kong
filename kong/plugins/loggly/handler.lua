@@ -1,4 +1,7 @@
 local cjson = require "cjson"
+local sandbox = require "kong.tools.sandbox".sandbox
+local kong_meta = require "kong.meta"
+local get_host_name = kong.node.get_hostname
 
 
 local kong = kong
@@ -9,15 +12,6 @@ local timer_at = ngx.timer.at
 local udp = ngx.socket.udp
 local concat = table.concat
 local insert = table.insert
-
-
-local function get_host_name()
-  local f = io.popen("/bin/hostname")
-  local hostname = f:read("*a") or ""
-  f:close()
-  hostname = string.gsub(hostname, "\n$", "")
-  return hostname
-end
 
 
 local HOSTNAME = get_host_name()
@@ -70,6 +64,7 @@ local function send_to_loggly(conf, message, pri)
   local ok, err = sock:setpeername(host, port)
   if not ok then
     kong.log.err("failed to connect to ", host, ":", tostring(port), ": ", err)
+    sock:close()
     return
   end
 
@@ -121,11 +116,18 @@ end
 
 local LogglyLogHandler = {
   PRIORITY = 6,
-  VERSION = "2.0.1",
+  VERSION = kong_meta.version,
 }
 
 
 function LogglyLogHandler:log(conf)
+  if conf.custom_fields_by_lua then
+    local set_serialize_value = kong.log.set_serialize_value
+    for key, expression in pairs(conf.custom_fields_by_lua) do
+      set_serialize_value(key, sandbox(expression)())
+    end
+  end
+
   local message = kong.log.serialize()
 
   local ok, err = timer_at(0, log, conf, message)

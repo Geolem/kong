@@ -1,5 +1,6 @@
 local lrucache   = require "resty.lrucache"
 local url        = require "socket.url"
+local kong_meta = require "kong.meta"
 
 
 local kong     = kong
@@ -17,7 +18,7 @@ local CorsHandler = {}
 
 
 CorsHandler.PRIORITY = 2000
-CorsHandler.VERSION = "2.0.0"
+CorsHandler.VERSION = kong_meta.version
 
 
 -- per-plugin cache of normalized origins for runtime comparison
@@ -27,6 +28,11 @@ local config_cache = setmetatable({}, mt_cache)
 
 -- per-worker cache of parsed requests origins with 1000 slots
 local normalized_req_domains = lrucache.new(10e3)
+
+
+local function is_origin_provided(origin)
+  return origin and origin ~= ""
+end
 
 
 local function normalize_origin(domain)
@@ -60,26 +66,20 @@ local function add_vary_header(header_filter)
   end
 end
 
-local function configure_origin(conf, header_filter)
+local function configure_origin(conf, header_filter, req_origin)
   local n_origins = conf.origins ~= nil and #conf.origins or 0
   local set_header = kong.response.set_header
+
+  if n_origins == 0 or (n_origins == 1 and conf.origins[1] == "*") then
+    set_header("Access-Control-Allow-Origin", "*")
+    return true
+  end
 
   -- always set Vary header (it can be used for calculating cache key)
   -- https://github.com/rs/cors/issues/10
   add_vary_header(header_filter)
 
-  if n_origins == 0 then
-    set_header("Access-Control-Allow-Origin", "*")
-    return true
-  end
-
   if n_origins == 1 then
-    if conf.origins[1] == "*" then
-      set_header("Access-Control-Allow-Origin", "*")
-      return true
-    end
-
-
     -- if this doesnt look like a regex, set the ACAO header directly
     -- otherwise, we'll fall through to an iterative search and
     -- set the ACAO header based on the client Origin
@@ -94,13 +94,17 @@ local function configure_origin(conf, header_filter)
     end
   end
 
-  local req_origin = kong.request.get_header("origin")
-  if req_origin then
+  if is_origin_provided(req_origin) then
     local cached_domains = config_cache[conf]
     if not cached_domains then
       cached_domains = {}
 
       for _, entry in ipairs(conf.origins) do
+        if entry == "*" then
+          set_header("Access-Control-Allow-Origin", "*")
+          return true
+        end
+
         local domain
         local maybe_regex, _, err = re_find(entry, "[^A-Za-z0-9.:/-]", "jo")
         if err then
@@ -167,7 +171,7 @@ local function configure_origin(conf, header_filter)
 end
 
 
-local function configure_credentials(conf, allow_all, header_filter)
+local function configure_credentials(conf, allow_all, header_filter, req_origin)
   local set_header = kong.response.set_header
 
   if not conf.credentials then
@@ -181,8 +185,8 @@ local function configure_credentials(conf, allow_all, header_filter)
 
   -- Access-Control-Allow-Origin is '*', must change it because ACAC cannot
   -- be 'true' if ACAO is '*'.
-  local req_origin = kong.request.get_header("origin")
-  if req_origin then
+  if is_origin_provided(req_origin) then
+    add_vary_header(header_filter)
     set_header("Access-Control-Allow-Origin", req_origin)
     set_header("Access-Control-Allow-Credentials", true)
   end
@@ -190,8 +194,9 @@ end
 
 
 function CorsHandler:access(conf)
+  local req_origin = kong.request.get_header("Origin")
   if kong.request.get_method() ~= "OPTIONS"
-     or not kong.request.get_header("Origin")
+     or not is_origin_provided(req_origin)
      or not kong.request.get_header("Access-Control-Request-Method")
   then
     return
@@ -206,8 +211,8 @@ function CorsHandler:access(conf)
     return
   end
 
-  local allow_all = configure_origin(conf, false)
-  configure_credentials(conf, allow_all, false)
+  local allow_all = configure_origin(conf, false, req_origin)
+  configure_credentials(conf, allow_all, false, req_origin)
 
   local set_header = kong.response.set_header
 
@@ -232,6 +237,11 @@ function CorsHandler:access(conf)
     set_header("Access-Control-Max-Age", tostring(conf.max_age))
   end
 
+  if conf.private_network and
+    kong.request.get_header("Access-Control-Request-Private-Network") == 'true' then
+      set_header("Access-Control-Allow-Private-Network", 'true')
+  end
+
   return kong.response.exit(HTTP_OK)
 end
 
@@ -241,8 +251,13 @@ function CorsHandler:header_filter(conf)
     return
   end
 
-  local allow_all = configure_origin(conf, true)
-  configure_credentials(conf, allow_all, true)
+  local req_origin = kong.request.get_header("origin")
+  if not is_origin_provided(req_origin) and not conf.allow_origin_absent then
+    return
+  end
+
+  local allow_all = configure_origin(conf, true, req_origin)
+  configure_credentials(conf, allow_all, true, req_origin)
 
   if conf.exposed_headers and #conf.exposed_headers > 0 then
     kong.response.set_header("Access-Control-Expose-Headers",

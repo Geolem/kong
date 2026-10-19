@@ -1,14 +1,16 @@
-local utils      = require "kong.tools.utils"
 local cjson_safe = require "cjson.safe"
 local cjson      = require "cjson"
 local ws_server  = require "resty.websocket.server"
-local pl_stringx = require "pl.stringx"
+local pl_file    = require "pl.file"
+local strip      = require("kong.tools.string").strip
+local splitn      = require("kong.tools.string").splitn
 
 
 local kong = {
   table = require("kong.pdk.table").new()
 }
 
+local ocsp_status = "good"
 
 local function parse_multipart_form_params(body, content_type)
   if not content_type then
@@ -22,11 +24,11 @@ local function parse_multipart_form_params(body, content_type)
   end
 
   local boundary    = m[1]
-  local parts_split = utils.split(body, '--' .. boundary)
+  local parts_split, parts_count = splitn(body, '--' .. boundary)
   local params      = {}
   local part, from, to, part_value, part_name, part_headers, first_header
-  for i = 1, #parts_split do
-    part = pl_stringx.strip(parts_split[i])
+  for i = 1, parts_count do
+    part = strip(parts_split[i])
 
     if part ~= '' and part ~= '--' then
       from, to, err = ngx.re.find(part, '^\\r$', 'ojm')
@@ -36,8 +38,9 @@ local function parse_multipart_form_params(body, content_type)
 
       part_value   = part:sub(to + 2, #part) -- +2: trim leading line jump
       part_headers = part:sub(1, from - 1)
-      first_header = utils.split(part_headers, '\\n')[1]
-      if pl_stringx.startswith(first_header:lower(), "content-disposition") then
+      local part_headers_t = splitn(part_headers, '\\n')
+      first_header = part_headers_t[1]
+      if first_header:lower():sub(1, 19) == "content-disposition" then
         local m, err = ngx.re.match(first_header, 'name="(.*?)"', "oj")
 
         if err or not m or not m[1] then
@@ -64,6 +67,7 @@ local function send_text_response(text, content_type, headers)
   text = ngx.req.get_method() == "HEAD" and "" or tostring(text)
 
   ngx.header["X-Powered-By"]   = "mock_upstream"
+  ngx.header["Server"]         = "mock-upstream/1.0.0"
   ngx.header["Content-Length"] = #text + 1
   ngx.header["Content-Type"]   = content_type
 
@@ -111,7 +115,7 @@ local function find_http_credentials(authorization_header)
     local decoded_basic = ngx.decode_base64(m[1])
 
     if decoded_basic then
-      local user_pass = utils.split(decoded_basic, ":")
+      local user_pass = splitn(decoded_basic, ":", 3)
       return user_pass[1], user_pass[2]
     end
   end
@@ -120,7 +124,7 @@ end
 
 local function filter_access_by_basic_auth(expected_username,
                                            expected_password)
-   local headers = ngx.req.get_headers()
+   local headers = ngx.req.get_headers(0)
 
    local username, password =
    find_http_credentials(headers["proxy-authorization"])
@@ -197,7 +201,7 @@ local function get_post_data(content_type)
     if content_type:find("application/x-www-form-urlencoded", nil, true) then
 
       kind        = "form"
-      params, err = ngx.req.get_post_args()
+      params, err = ngx.req.get_post_args(0)
 
     elseif content_type:find("multipart/form-data", nil, true) then
       kind        = "multipart-form"
@@ -229,7 +233,7 @@ local function get_default_json_response()
     post_data = get_post_data(headers["Content-Type"]),
     url       = ("%s://%s:%s%s"):format(vars.scheme, vars.host,
                                         vars.server_port, vars.request_uri),
-    uri_args  = ngx.req.get_uri_args(),
+    uri_args  = ngx.req.get_uri_args(0),
     vars      = vars,
   }
 end
@@ -318,7 +322,7 @@ local function store_log(logname)
     entries = { entries }
   end
 
-  local log_req_headers = ngx.req.get_headers()
+  local log_req_headers = ngx.req.get_headers(0)
 
   for i = 1, #entries do
     local store = {
@@ -376,6 +380,27 @@ local function reset_log(logname)
 end
 
 
+local function handle_ocsp()
+  if ocsp_status == "good" then
+    ngx.print(pl_file.read(ngx.config.prefix() .. "/../spec/fixtures/ocsp_certs/resp-good.dat"))
+
+  elseif ocsp_status == "revoked" then
+    ngx.print(pl_file.read(ngx.config.prefix() .. "/../spec/fixtures/ocsp_certs/resp-revoked.dat"))
+
+  elseif ocsp_status == "error" then
+    ngx.exit(500)
+
+  else
+    assert("unknown ocsp_status:" ..ocsp_status)
+  end
+end
+
+
+local function set_ocsp(status)
+  ocsp_status = status
+end
+
+
 return {
   get_default_json_response   = get_default_json_response,
   filter_access_by_method     = filter_access_by_method,
@@ -387,4 +412,6 @@ return {
   retrieve_log                = retrieve_log,
   count_log                   = count_log,
   reset_log                   = reset_log,
+  handle_ocsp                 = handle_ocsp,
+  set_ocsp                    = set_ocsp,
 }

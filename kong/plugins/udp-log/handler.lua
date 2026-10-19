@@ -1,4 +1,6 @@
 local cjson = require "cjson"
+local sandbox = require "kong.tools.sandbox".sandbox
+local kong_meta = require "kong.meta"
 
 
 local kong = kong
@@ -18,6 +20,7 @@ local function log(premature, conf, str)
   local ok, err = sock:setpeername(conf.host, conf.port)
   if not ok then
     kong.log.err("could not connect to ", conf.host, ":", conf.port, ": ", err)
+    sock:close()
     return
   end
 
@@ -38,11 +41,18 @@ end
 
 local UdpLogHandler = {
   PRIORITY = 8,
-  VERSION = "2.0.1",
+  VERSION = kong_meta.version,
 }
 
 
 function UdpLogHandler:log(conf)
+  if conf.custom_fields_by_lua then
+    local set_serialize_value = kong.log.set_serialize_value
+    for key, expression in pairs(conf.custom_fields_by_lua) do
+      set_serialize_value(key, sandbox(expression)())
+    end
+  end
+
   local ok, err = timer_at(0, log, conf, cjson.encode(kong.log.serialize()))
   if not ok then
     kong.log.err("could not create timer: ", err)

@@ -18,19 +18,23 @@ for _, strategy in helpers.each_strategy() do
       })
 
       local route1 = bp.routes:insert {
-        hosts = { "logging.com" },
+        hosts = { "logging.test" },
       }
 
       local route2 = bp.routes:insert {
-        hosts = { "logging1.com" },
+        hosts = { "logging1.test" },
       }
 
       local route3 = bp.routes:insert {
-        hosts = { "logging2.com" },
+        hosts = { "logging2.test" },
       }
 
       local route4 = bp.routes:insert {
-        hosts = { "logging3.com" },
+        hosts = { "logging3.test" },
+      }
+
+      local route5 = bp.routes:insert {
+        hosts = { "logging4.test" },
       }
 
       bp.plugins:insert {
@@ -81,25 +85,42 @@ for _, strategy in helpers.each_strategy() do
         }
       }
 
+      bp.plugins:insert {
+        route = { id = route5.id },
+        name     = "loggly",
+        config   = {
+          host = "127.0.0.1",
+          port = UDP_PORT,
+          key  = "123456789",
+          custom_fields_by_lua = {
+            new_field = "return 123",
+            ["nested.keys"] = "return 456",
+            ["escape\\.dots"] = "return 789",
+            ["nested.escape\\.dots"] = "return 135",
+            route = "return nil", -- unset route field
+          }
+        }
+      }
+
       -- grpc [[
       local grpc_service = bp.services:insert {
         name = "grpc-service",
-        url = "grpc://localhost:15002",
+        url = helpers.grpcbin_url,
       }
 
       local grpc_route1 = bp.routes:insert {
         service = grpc_service,
-        hosts = { "grpc_logging.com" },
+        hosts = { "grpc_logging.test" },
       }
 
       local grpc_route2 = bp.routes:insert {
         service = grpc_service,
-        hosts = { "grpc_logging1.com" },
+        hosts = { "grpc_logging1.test" },
       }
 
       local grpc_route3 = bp.routes:insert {
         service = grpc_service,
-        hosts = { "grpc_logging2.com" },
+        hosts = { "grpc_logging2.test" },
       }
 
       bp.plugins:insert {
@@ -213,7 +234,7 @@ for _, strategy in helpers.each_strategy() do
         method  = "GET",
         path    = "/request",
         headers = {
-          host  = "logging.com"
+          host  = "logging.test"
         }
       })
       assert.equal("12", pri)
@@ -221,7 +242,7 @@ for _, strategy in helpers.each_strategy() do
     end)
 
     it("logs to UDP when severity is warning and log level info #grpc", function()
-      local pri, message = run_grpc("grpc_logging.com")
+      local pri, message = run_grpc("grpc_logging.test")
       assert.equal("12", pri)
       assert.equal("127.0.0.1", message.client_ip)
     end)
@@ -231,7 +252,7 @@ for _, strategy in helpers.each_strategy() do
         method  = "GET",
         path    = "/request",
         headers = {
-          host  = "logging1.com"
+          host  = "logging1.test"
         }
       })
       assert.equal("14", pri)
@@ -239,7 +260,7 @@ for _, strategy in helpers.each_strategy() do
     end)
 
     it("logs to UDP when severity is info and log level debug #grpc", function()
-      local pri, message = run_grpc("grpc_logging1.com")
+      local pri, message = run_grpc("grpc_logging1.test")
       assert.equal("14", pri)
       assert.equal("127.0.0.1", message.client_ip)
     end)
@@ -249,7 +270,7 @@ for _, strategy in helpers.each_strategy() do
         method  = "GET",
         path    = "/request",
         headers = {
-          host  = "logging2.com"
+          host  = "logging2.test"
         }
       })
       assert.equal("10", pri)
@@ -257,7 +278,7 @@ for _, strategy in helpers.each_strategy() do
     end)
 
     it("logs to UDP when severity is critical and log level critical #grpc", function()
-      local pri, message = run_grpc("grpc_logging2.com")
+      local pri, message = run_grpc("grpc_logging2.test")
       assert.equal("10", pri)
       assert.equal("127.0.0.1", message.client_ip)
     end)
@@ -267,7 +288,7 @@ for _, strategy in helpers.each_strategy() do
         method  = "GET",
         path    = "/",
         headers = {
-          host  = "logging3.com"
+          host  = "logging3.test"
         }
       })
       assert.equal("14", pri)
@@ -279,7 +300,7 @@ for _, strategy in helpers.each_strategy() do
         method  = "GET",
         path    = "/",
         headers = {
-          host  = "logging3.com"
+          host  = "logging3.test"
         }
       })
       assert.equal("14", pri)
@@ -291,7 +312,7 @@ for _, strategy in helpers.each_strategy() do
         method  = "GET",
         path    = "/status/401",
         headers = {
-          host  = "logging3.com"
+          host  = "logging3.test"
         }
       }, 401)
       assert.equal("14", pri)
@@ -303,11 +324,39 @@ for _, strategy in helpers.each_strategy() do
         method  = "GET",
         path    = "/status/500",
         headers = {
-          host  = "logging3.com"
+          host  = "logging3.test"
         }
       }, 500)
       assert.equal("14", pri)
       assert.equal("127.0.0.1", message.client_ip)
+    end)
+
+    describe("custom log values by lua", function()
+      it("logs custom values", function()
+        local pri, message = run({
+          method  = "GET",
+          path    = "/status/500",
+          headers = {
+            host  = "logging4.test"
+          }
+        }, 500)
+        assert.equal("14", pri)
+        assert.equal(123, message.new_field)
+        assert.same(456, message.nested.keys)
+        assert.same(789, message["escape.dots"])
+        assert.same(135, message.nested["escape.dots"])
+      end)
+      it("unsets existing log values", function()
+        local pri, message = run({
+          method  = "GET",
+          path    = "/status/500",
+          headers = {
+            host  = "logging4.test"
+          }
+        }, 500)
+        assert.equal("14", pri)
+        assert.equal(nil, message.route)
+      end)
     end)
   end)
 end

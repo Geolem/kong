@@ -1,22 +1,41 @@
-local utils = require "kong.tools.utils"
+local kong_table = require "kong.tools.table"
 local cjson = require "cjson"
 local pl_pretty = require "pl.pretty"
 local tablex = require "pl.tablex"
 local app_helpers = require "lapis.application"
 local arguments = require "kong.api.arguments"
 local Errors = require "kong.db.errors"
-local singletons = require "kong.singletons"
 local hooks = require "kong.hooks"
+local decode_args = require("kong.tools.http").decode_args
 
-local ngx      = ngx
-local sub      = string.sub
-local find     = string.find
-local type     = type
-local pairs    = pairs
-local ipairs   = ipairs
+
+local ngx = ngx
+local header = ngx.header
+local sub = string.sub
+local find = string.find
+local type = type
+local pairs = pairs
+local ipairs = ipairs
+local concat = table.concat
+
+local get_method = ngx.req.get_method
+
 
 local _M = {}
 local NO_ARRAY_INDEX_MARK = {}
+
+
+local HTTP_METHODS = {
+  ["GET"] = true,
+  ["HEAD"] = true,
+  ["POST"] = true,
+  ["PUT"] = true,
+  ["DELETE"] = true,
+  ["CONNECT"] = true,
+  ["OPTIONS"] = true,
+  ["TRACE"] = true,
+  ["PATCH"] = true,
+}
 
 -- Parses a form value, handling multipart/data values
 -- @param `v` The value object
@@ -76,7 +95,7 @@ function _M.normalize_nested_params(obj)
     is_array = false
     if type(v) == "table" then
       -- normalize arrays since Lapis parses ?key[1]=foo as {["1"]="foo"} instead of {"foo"}
-      if utils.is_array(v, "lapis") then
+      if kong_table.is_array(v, "lapis") then
         is_array = true
         local arr = {}
         for _, arr_v in pairs(v) do arr[#arr+1] = arr_v end
@@ -109,7 +128,14 @@ function _M.normalize_nested_params(obj)
         -- on this case we backtrack one element (we use `prev` instead of `node`)
         -- and we set it to the array (v)
         -- this edge case is needed because Lapis builds params like that (flatten_params function)
-        prev[path_entry or k] = v
+        if type(node) == "table" then
+          for i, v in ipairs(v) do
+            node[i] = v
+          end
+
+        else
+          prev[path_entry or k] = v
+        end
       elseif type(node) == "table" then
         -- regular case: the last element is similar to the loop iteration.
         -- instead of a table, we set the value (v) on the last element
@@ -199,7 +225,8 @@ do
 
   schema_to_jsonable = function(schema)
     local fields = fields_to_jsonable(schema.fields)
-    return { fields = fields }
+    local entity_checks = fields_to_jsonable(schema.entity_checks or {})
+    return { entity_checks = entity_checks, fields = fields,  }
   end
   _M.schema_to_jsonable = schema_to_jsonable
 end
@@ -212,7 +239,7 @@ local ACCEPTS_YAML = tablex.readonly({
 
 
 function _M.before_filter(self)
-  if not NEEDS_BODY[ngx.req.get_method()] then
+  if not NEEDS_BODY[get_method()] then
     return
   end
 
@@ -230,10 +257,15 @@ function _M.before_filter(self)
       end
     end
 
+  elseif type(content_type) == "table" then
+    return kong.response.exit(400, "Multiple Content-Type headers not allowed")
+
   elseif sub(content_type, 1, 16) == "application/json"
       or sub(content_type, 1, 19) == "multipart/form-data"
       or sub(content_type, 1, 33) == "application/x-www-form-urlencoded"
-      or (ACCEPTS_YAML[self.route_name] and sub(content_type, 1,  9) == "text/yaml")
+      or (ACCEPTS_YAML[self.route_name] and
+          (sub(content_type, 1,  16) == "application/yaml" or
+           sub(content_type, 1,  9)  == "text/yaml"))
   then
     return
   end
@@ -241,24 +273,61 @@ function _M.before_filter(self)
   return kong.response.exit(415)
 end
 
+function _M.cors_filter(self)
+  local allowed_origins = kong.configuration.admin_gui_origin
+
+  local function is_origin_allowed(req_origin)
+    for _, allowed_origin in ipairs(allowed_origins) do
+      if req_origin == allowed_origin then
+        return true
+      end
+    end
+    return false
+  end
+
+  local req_origin = self.req.headers["Origin"]
+
+  if allowed_origins and #allowed_origins > 0 then
+    if not is_origin_allowed(req_origin) then
+      req_origin = allowed_origins[1]
+    end
+  else
+    req_origin = req_origin or "*"
+  end
+
+  ngx.header["Access-Control-Allow-Origin"] = req_origin
+  ngx.header["Access-Control-Allow-Credentials"] = "true"
+
+  if ngx.req.get_method() == "OPTIONS" then
+    local request_allow_headers = self.req.headers["Access-Control-Request-Headers"]
+    if request_allow_headers then
+      ngx.header["Access-Control-Allow-Headers"] = request_allow_headers
+    end
+  end
+end
 
 local function parse_params(fn)
   return app_helpers.json_params(function(self, ...)
-    if NEEDS_BODY[ngx.req.get_method()] then
-      local content_type = self.req.headers["content-type"]
+    local content_type = self.req.headers["content-type"]
+    local is_json
+
+    if NEEDS_BODY[get_method()] then
       if content_type then
         content_type = content_type:lower()
+        is_json = find(content_type, "application/json", 1, true)
 
-        if find(content_type, "application/json", 1, true) and not self.json then
+        if is_json and not self.json then
           return kong.response.exit(400, { message = "Cannot parse JSON body" })
 
         elseif find(content_type, "application/x-www-form-urlencode", 1, true) then
-          self.params = utils.decode_args(self.params)
+          self.params = decode_args(self.params)
         end
       end
     end
 
-    self.params = _M.normalize_nested_params(self.params)
+    if not is_json then
+      self.params = _M.normalize_nested_params(self.params)
+    end
 
     local res, err = fn(self, ...)
 
@@ -291,26 +360,29 @@ local function new_db_on_error(self)
     err.strategy = nil
   end
 
-  if err.code == Errors.codes.SCHEMA_VIOLATION
-  or err.code == Errors.codes.INVALID_PRIMARY_KEY
-  or err.code == Errors.codes.FOREIGN_KEY_VIOLATION
-  or err.code == Errors.codes.INVALID_OFFSET
-  or err.code == Errors.codes.FOREIGN_KEYS_UNRESOLVED
+  local err_code = err.code
+  local codes = Errors.codes
+
+  if err_code == codes.SCHEMA_VIOLATION
+  or err_code == codes.INVALID_PRIMARY_KEY
+  or err_code == codes.FOREIGN_KEY_VIOLATION
+  or err_code == codes.INVALID_OFFSET
+  or err_code == codes.FOREIGN_KEYS_UNRESOLVED
   then
     return kong.response.exit(400, err)
   end
 
-  if err.code == Errors.codes.NOT_FOUND then
+  if err_code == codes.NOT_FOUND then
     return kong.response.exit(404, err)
   end
 
-  if err.code == Errors.codes.OPERATION_UNSUPPORTED then
+  if err_code == codes.OPERATION_UNSUPPORTED then
     kong.log.err(err)
     return kong.response.exit(405, err)
   end
 
-  if err.code == Errors.codes.PRIMARY_KEY_VIOLATION
-  or err.code == Errors.codes.UNIQUE_VIOLATION
+  if err_code == codes.PRIMARY_KEY_VIOLATION
+  or err_code == codes.UNIQUE_VIOLATION
   then
     return kong.response.exit(409, err)
   end
@@ -350,8 +422,19 @@ local function on_error(self)
 end
 
 
+local function options_method(methods)
+  return function()
+    kong.response.exit(204, nil, {
+      ["Allow"] = header["Access-Control-Allow-Methods"] or methods,
+      ["Access-Control-Allow-Methods"] = header["Access-Control-Allow-Methods"] or methods,
+      ["Access-Control-Allow-Headers"] = header["Access-Control-Allow-Headers"] or "Content-Type"
+    })
+  end
+end
+
+
 local handler_helpers = {
-  yield_error = app_helpers.yield_error
+  yield_error = app_helpers.yield_error,
 }
 
 
@@ -359,12 +442,33 @@ function _M.attach_routes(app, routes)
   for route_path, methods in pairs(routes) do
     methods.on_error = methods.on_error or on_error
 
+    local http_methods_array = {}
+    local http_methods_count = 0
+
     for method_name, method_handler in pairs(methods) do
       local wrapped_handler = function(self)
         return method_handler(self, {}, handler_helpers)
       end
 
       methods[method_name] = parse_params(wrapped_handler)
+
+      if HTTP_METHODS[method_name] then
+        http_methods_count = http_methods_count + 1
+        http_methods_array[http_methods_count] = method_name
+      end
+    end
+
+    if not methods["HEAD"] and methods["GET"] then
+      methods["HEAD"] = methods["GET"]
+      http_methods_count = http_methods_count + 1
+      http_methods_array[http_methods_count] = "HEAD"
+    end
+
+    if not methods["OPTIONS"] then
+      http_methods_count = http_methods_count + 1
+      http_methods_array[http_methods_count] = "OPTIONS"
+      table.sort(http_methods_array)
+      methods["OPTIONS"] = options_method(concat(http_methods_array, ", ", 1, http_methods_count))
     end
 
     app:match(route_path, route_path, app_helpers.respond_to(methods))
@@ -382,6 +486,9 @@ function _M.attach_new_db_routes(app, routes)
 
     methods.on_error = methods.on_error or new_db_on_error
 
+    local http_methods_array = {}
+    local http_methods_count = 0
+
     for method_name, method_handler in pairs(methods) do
       local wrapped_handler = function(self)
         self.args = arguments.load({
@@ -389,10 +496,28 @@ function _M.attach_new_db_routes(app, routes)
           request = self.req,
         })
 
-        return method_handler(self, singletons.db, handler_helpers)
+        return method_handler(self, kong.db, handler_helpers)
       end
 
       methods[method_name] = parse_params(wrapped_handler)
+
+      if HTTP_METHODS[method_name] then
+        http_methods_count = http_methods_count + 1
+        http_methods_array[http_methods_count] = method_name
+      end
+    end
+
+    if not methods["HEAD"] and methods["GET"] then
+      methods["HEAD"] = methods["GET"]
+      http_methods_count = http_methods_count + 1
+      http_methods_array[http_methods_count] = "HEAD"
+    end
+
+    if not methods["OPTIONS"] then
+      http_methods_count = http_methods_count + 1
+      http_methods_array[http_methods_count] = "OPTIONS"
+      table.sort(http_methods_array)
+      methods["OPTIONS"] = options_method(concat(http_methods_array, ", ", 1, http_methods_count))
     end
 
     app:match(route_path, route_path, app_helpers.respond_to(methods))

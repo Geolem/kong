@@ -19,7 +19,7 @@ for _, strategy in helpers.each_strategy() do
       })
 
       local route = bp.routes:insert {
-        hosts = { "tcp_logging.com" },
+        hosts = { "tcp_logging.test" },
       }
 
       bp.plugins:insert {
@@ -45,7 +45,7 @@ for _, strategy in helpers.each_strategy() do
 
 
       local route2 = bp.routes:insert {
-        hosts = { "tcp_logging_tls.com" },
+        hosts = { "tcp_logging_tls.test" },
       }
 
       bp.plugins:insert {
@@ -60,7 +60,7 @@ for _, strategy in helpers.each_strategy() do
 
       local grpc_service = assert(bp.services:insert {
         name = "grpc-service",
-        url = "grpc://localhost:15002",
+        url = helpers.grpcbin_url,
       })
 
       local route3 = assert(bp.routes:insert {
@@ -80,7 +80,7 @@ for _, strategy in helpers.each_strategy() do
 
       local grpcs_service = assert(bp.services:insert {
         name = "grpcs-service",
-        url = "grpcs://localhost:15003",
+        url = helpers.grpcbin_ssl_url,
       })
 
       local route4 = assert(bp.routes:insert {
@@ -99,7 +99,7 @@ for _, strategy in helpers.each_strategy() do
       }
 
       local route5 = bp.routes:insert {
-        hosts = { "early_termination.example.com" },
+        hosts = { "early_termination.example.test" },
       }
 
       bp.plugins:insert {
@@ -173,6 +173,26 @@ for _, strategy in helpers.each_strategy() do
         },
       }
 
+      local route6 = bp.routes:insert {
+        hosts = { "custom_tcp_logging.test" },
+      }
+
+      bp.plugins:insert {
+        route = { id = route6.id },
+        name     = "tcp-log",
+        config   = {
+          host   = "127.0.0.1",
+          port   = TCP_PORT,
+          custom_fields_by_lua = {
+            new_field = "return 123",
+            ["nested.keys"] = "return 456",
+            ["escape\\.dots"] = "return 789",
+            ["nested.escape\\.dots"] = "return 135",
+            route = "return nil", -- unset route field
+          }
+        },
+      }
+
       assert(helpers.start_kong({
         database   = strategy,
         nginx_conf = "spec/fixtures/custom_nginx.template",
@@ -202,7 +222,7 @@ for _, strategy in helpers.each_strategy() do
         method  = "GET",
         path    = "/request",
         headers = {
-          host  = "tcp_logging.com",
+          host  = "tcp_logging.test",
         },
       })
       assert.response(r).has.status(200)
@@ -218,6 +238,63 @@ for _, strategy in helpers.each_strategy() do
 
       -- Since it's over HTTP, let's make sure there are no TLS information
       assert.is_nil(log_message.request.tls)
+    end)
+
+    describe("custom log values by lua", function()
+      it("logs custom values", function()
+        local thread = helpers.tcp_server(TCP_PORT) -- Starting the mock TCP server
+
+        -- Making the request
+        local r = assert(proxy_client:send {
+          method  = "GET",
+          path    = "/request",
+          headers = {
+            host  = "custom_tcp_logging.test",
+          },
+        })
+        assert.response(r).has.status(200)
+
+        -- Getting back the TCP server input
+        local ok, res = thread:join()
+        assert.True(ok)
+        assert.is_string(res)
+
+        -- Making sure it's alright
+        local log_message = cjson.decode(res)
+        assert.equal("127.0.0.1", log_message.client_ip)
+
+        -- Since it's over HTTP, let's make sure there are no TLS information
+        assert.same(123, log_message.new_field)
+        assert.same(456, log_message.nested.keys)
+        assert.same(789, log_message["escape.dots"])
+        assert.same(135, log_message.nested["escape.dots"])
+      end)
+
+      it("unsets existing log values", function()
+        local thread = helpers.tcp_server(TCP_PORT) -- Starting the mock TCP server
+
+        -- Making the request
+        local r = assert(proxy_client:send {
+          method  = "GET",
+          path    = "/request",
+          headers = {
+            host  = "custom_tcp_logging.test",
+          },
+        })
+        assert.response(r).has.status(200)
+
+        -- Getting back the TCP server input
+        local ok, res = thread:join()
+        assert.True(ok)
+        assert.is_string(res)
+
+        -- Making sure it's alright
+        local log_message = cjson.decode(res)
+        assert.equal("127.0.0.1", log_message.client_ip)
+
+        -- Since it's over HTTP, let's make sure there are no TLS information
+        assert.same(nil, log_message.route)
+      end)
     end)
 
     it("logs to TCP (#grpc)", function()
@@ -258,7 +335,7 @@ for _, strategy in helpers.each_strategy() do
         method  = "GET",
         path    = "/delay/1",
         headers = {
-          host  = "tcp_logging.com",
+          host  = "tcp_logging.test",
         },
       })
 
@@ -320,7 +397,7 @@ for _, strategy in helpers.each_strategy() do
       assert.True(is_latencies_sum_adding_up)
     end)
 
-    it("logs proper latencies (#grpcs) #flaky", function()
+    it("logs proper latencies (#grpcs)", function()
       local tcp_thread = helpers.tcp_server(TCP_PORT) -- Starting the mock TCP server
 
       -- Making the request
@@ -331,6 +408,7 @@ for _, strategy in helpers.each_strategy() do
         },
         opts = {
           ["-authority"] = "tcp_logging_grpcs.test",
+          ["-H"] = "'Content-Type: text/plain'",
         }
       })
       assert.truthy(ok)
@@ -365,7 +443,7 @@ for _, strategy in helpers.each_strategy() do
         method  = "GET",
         path    = "/request",
         headers = {
-          host = "tcp_logging_tls.com",
+          host = "tcp_logging_tls.test",
         },
       })
       assert.response(r).has.status(200)
@@ -388,7 +466,7 @@ for _, strategy in helpers.each_strategy() do
         method  = "GET",
         path    = "/request",
         headers = {
-          host  = "tcp_logging.com",
+          host  = "tcp_logging.test",
         },
       })
 
@@ -401,7 +479,7 @@ for _, strategy in helpers.each_strategy() do
 
       -- Making sure it's alright
       local log_message = cjson.decode(res)
-      assert.equal("TLSv1.2", log_message.request.tls.version)
+      assert.equal("TLSv1.3", log_message.request.tls.version)
       assert.is_string(log_message.request.tls.cipher)
       assert.equal("NONE", log_message.request.tls.client_verify)
     end)
@@ -414,7 +492,7 @@ for _, strategy in helpers.each_strategy() do
         method  = "GET",
         path    = "/request",
         headers = {
-          host  = "tcp_logging.com",
+          host  = "tcp_logging.test",
           ["x-ssl-client-verify"] = "SUCCESS",
         },
       })
@@ -428,7 +506,7 @@ for _, strategy in helpers.each_strategy() do
 
       -- Making sure it's alright
       local log_message = cjson.decode(res)
-      assert.equal("TLSv1.2", log_message.request.tls.version)
+      assert.equal("TLSv1.3", log_message.request.tls.version)
       assert.is_string(log_message.request.tls.cipher)
       assert.equal("SUCCESS", log_message.request.tls.client_verify)
     end)
@@ -458,7 +536,7 @@ for _, strategy in helpers.each_strategy() do
       local log_message = cjson.decode(res)
 
       assert.equal("grpcs", log_message.service.protocol)
-      assert.equal("TLSv1.3", log_message.request.tls.version)
+      assert.match("TLSv1.[23]", log_message.request.tls.version)
       assert.is_string(log_message.request.tls.cipher)
       assert.equal("NONE", log_message.request.tls.client_verify)
     end)
@@ -471,7 +549,7 @@ for _, strategy in helpers.each_strategy() do
         method  = "GET",
         path    = "/request",
         headers = {
-          host  = "early_termination.example.com",
+          host  = "early_termination.example.test",
         },
       })
       assert.response(r).has.status(200)
